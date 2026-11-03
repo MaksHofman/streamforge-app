@@ -4,7 +4,7 @@ Minimal HTTP service used as the demo workload for the **StreamForge** DevOps / 
 
 The service is intentionally tiny. Its purpose is to be a real, testable, containerizable workload for practicing Docker, Kubernetes, Helm, GitOps and CI — not an application-development exercise.
 
-This repository contains **application code and tests only**. Kubernetes manifests, Helm charts, Argo CD configuration and infrastructure CI live in the companion repository, `streamforge-infra`.
+This repository contains **application code, tests and the Dockerfile**. Kubernetes manifests, Helm charts, Argo CD configuration and infrastructure CI live in the companion repository, `streamforge-infra`. The CI/CD pipeline logic is shared and lives in `pipeline-templates`.
 
 ## Status
 
@@ -12,9 +12,10 @@ This repository contains **application code and tests only**. Kubernetes manifes
 |---|---|
 | HTTP service (`/` and `/health`) | Implemented |
 | Unit tests | Implemented |
-| GitHub Actions CI (tests only) | Implemented |
-| Dockerfile | Planned (Stage 2) |
-| Image published to GHCR | Planned (Stage 2) |
+| Dockerfile (non-root, `python:3.12-slim`) | Implemented |
+| CI: tests, image build, Trivy scan (via shared reusable workflow) | Implemented |
+| Image published to GHCR on version tags (`v*`) | Implemented |
+| Deployment to Kubernetes | Handled in `streamforge-infra` |
 
 ## Endpoints
 
@@ -46,7 +47,9 @@ streamforge-app/
 │   └── test_server.py     # unit tests
 ├── .github/
 │   └── workflows/
-│       └── ci.yml         # code tests only
+│       └── ci.yml         # calls the shared pipeline in pipeline-templates
+├── Dockerfile
+├── .dockerignore
 ├── requirements.txt       # no dependencies at this stage
 ├── .gitignore
 └── README.md
@@ -85,34 +88,60 @@ python -m unittest discover -s tests -t . -v
 
 The tests start the server on a random free port in a background thread, so they do not conflict with a server you already have running.
 
-## Continuous integration
+## Run in Docker
 
-The workflow in `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It:
+```bash
+docker build -t streamforge-app:local .
+docker run --rm -p 8080:8080 streamforge-app:local
+```
 
-1. checks out the repository,
-2. sets up Python,
-3. installs dependencies from `requirements.txt`,
-4. runs the unit tests.
+The container runs as a non-root user (UID 10001) and listens on port 8080. Check `http://localhost:8080/health`.
 
-It uses read-only repository permissions (`contents: read`).
+## Continuous integration and image publishing
 
-The workflow deliberately does **not** build a Docker image, scan an image, publish to GHCR or update image tags. Image publishing is a separate, manual process (see below).
+`.github/workflows/ci.yml` calls a reusable workflow from the `pipeline-templates` repository (`python-app-pipeline.yml`), so the same pipeline can be shared between projects. It runs on pushes to `main`, on pull requests and on version tags (`v*`).
 
-## Container image and GHCR (planned — Stage 2)
+Pipeline stages:
 
-> This section describes the intended approach. The Dockerfile and published image do not exist yet; this README will be updated when they do.
+1. **Test** — runs the unit tests.
+2. **Build** — builds the Docker image on the runner. The image is not pushed at this point.
+3. **Trivy scan (gate)** — fails the pipeline if CRITICAL vulnerabilities are found (unfixed ones are ignored).
+4. **Trivy report** — a SARIF report is always produced and uploaded as a workflow artifact (kept for 30 days).
+5. **Push** — only on a version tag (`v*`) and only after the scan passes, the image is pushed to GHCR.
 
-- **Registry:** GitHub Container Registry (GHCR)
-- **Intended package name:** `ghcr.io/<github-owner>/streamforge-app`
-- **Versioning:** explicit version tags such as `0.1.0`; `latest` is not used for deployments.
-- **Publishing:** manual, from a developer machine, using a GitHub personal access token with the `write:packages` permission. Never commit tokens or credentials to this repository.
+Because the image is scanned before it is pushed, an image that fails the gate never reaches the registry. Pushes to `main` and pull requests run the test, build and scan stages but do not publish an image.
+
+The GitHub Actions artifact is only the Trivy report. The container image itself lives in GHCR; Kubernetes pulls it from there.
+
+## Releasing a new image version
+
+Create and push a Git tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The pipeline publishes the image to GHCR with two tags:
+
+- `0.1.0` — the version, taken from the Git tag;
+- a short commit SHA — identifies the exact commit the image was built from.
+
+Image: `ghcr.io/makshofman/streamforge-app`
+
+Version tags are immutable by convention — a published tag is never moved. `latest` is not used for deployments.
+
+## Registry and credentials
+
+- **Registry:** GitHub Container Registry (GHCR).
+- **Authentication in CI:** the built-in `GITHUB_TOKEN` with `packages: write`. No tokens or secrets are stored in this repository.
+- **Visibility:** the package should be public so a local kind cluster can pull the image without an image pull secret. If it is private, the cluster needs a pull secret.
 - **Consumption:** the `streamforge-infra` repository references the image repository and tag in its Helm values.
-
-Exact build and push commands, package visibility and credential handling will be documented here once the image is built and pushed.
 
 ## Related repositories
 
 - `streamforge-infra` — Kubernetes configuration, Helm chart, Argo CD, infrastructure CI, observability, security and documentation.
+- `pipeline-templates` — reusable GitHub Actions workflows shared between projects.
 
 ## Scope
 
