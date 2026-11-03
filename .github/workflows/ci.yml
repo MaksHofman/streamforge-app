@@ -8,7 +8,7 @@ on:
 
 jobs:
   pipeline:
-    uses: MaksHofman/pipeline-templates/.github/workflows/python-app-pipeline.yml@v1
+    uses: MaksHofman/pipeline-templates/.github/workflows/python-app-pipe.yml@v1
     with:
       image-name: ghcr.io/MaksHofman/streamforge-app
       push-image: ${{ startsWith(github.ref, 'refs/tags/v') }}
